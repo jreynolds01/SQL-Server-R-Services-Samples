@@ -42,7 +42,9 @@ To create the database, download the 2 files from the links below into some fold
 
 **Steps**
 > - Ensure that you have access to SQL Server 2016 with R Service enabled. You should also have permission to create or access the PerfTuning database.
-> - Create the PerfTuning database and add tables using the attached R and SQL scripts. You can either run createall.cmd or run the other db and table creating scripts one by one. To expedite, you can skip running the scripts by downloading the database using links above and restoring.
+> - Create the PerfTuning database 
+> - Update the createtables.R script to point to the location where you have the PerfTuning directory (the "options(dir = XXX)" line)
+> - Add tables using the attached R and SQL scripts. You can either run createall.cmd or run the other db and table creating scripts one by one. To expedite, you can skip running the scripts by downloading the database using links above and restoring.
 > - Install the dependant RODBC package, if not installed. Ensure that it is installed in the right library where Microsoft RevoScaleR package was installed. (If you ran creatall.cmd, it will install this package. Update the file if lib path needs to be specified)
 > - Update the runtests.R file to match your connection string and data directories.
 > - To store models, the code depends on rdata table. Ensure that it exists in the database. You should also enable power shell on the client machine. See serialization.R for more information.
