@@ -32,11 +32,21 @@ This folder contains the data files needed before running the scripts. Due to si
 
 There are 6 tables that are needed in the database PerfTuning before the runtests.R can be used for running the tests. The attached scripts help to create them using data from xdf and csv files in the data folder.
 
-Alternatively, the user can download the database files using the following links and skip creating them using the scripts mentioned above.
+Alternatively, the user can download the database files using the
+following links and skip creating them using the scripts mentioned above.
 
-To create the database, download the 2 files from the links below into some folder. Restore the database from the downloaded location. Assuming they are downloaded to folder D:\sql, the following command can be used to restore them.
+To create the database, download the 2 files from the links below into some folder. 
+Restore the database from the downloaded location. 
+Assuming they are downloaded to folder D:\sql, the following command can be used to restore them.
 
+*** NOTE: You must make sure that SQL can read from this directory! See 
+https://msdn.microsoft.com/en-us/library/jj219062.aspx
+for details.
+
+```
     RESTORE DATABASE PerfTuning FROM DISK = 'D:\sql\PerfTuning1.bak', DISK = 'D:\sql\PerfTuning2.bak' WITH REPLACE;
+```
+
 > https://sqlrperftuning.blob.core.windows.net/perftuningdb/PerfTuning1.bak
 > https://sqlrperftuning.blob.core.windows.net/perftuningdb/PerfTuning2.bak
 
@@ -48,6 +58,6 @@ To create the database, download the 2 files from the links below into some fold
 > - Install the dependant RODBC package, if not installed. Ensure that it is installed in the right library where Microsoft RevoScaleR package was installed. (If you ran creatall.cmd, it will install this package. Update the file if lib path needs to be specified)
 > - Update the runtests.R file to match your connection string and data directories.
 > - To store models, the code depends on rdata table. Ensure that it exists in the database. You should also enable power shell on the client machine. See serialization.R for more information.
-> - To run the tests, open your R IDE and set the working directory to the one with the scripts. Source the file runtests.R and call runTests(testsToRun, "output", 1, 500000L)
+> - To run the tests, open your R IDE and **set the working directory** to the one with the scripts. Source the file runtests.R and call runTests(testsToRun, "output", 1, 500000L)
 
 

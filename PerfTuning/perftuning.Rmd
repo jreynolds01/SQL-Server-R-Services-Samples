@@ -1,0 +1,321 @@
+---
+title: "Fixing Performance Tuning Benchmarks v1"
+---
+
+This document is intended to address a potential concern with the performance tuning
+information posted [here](https://github.com/jreynolds01/SQL-Server-R-Services-Samples/tree/master/PerfTuning)
+
+I have not reviewed all the tests, but the issue I did notice is in the third section 
+[Using Integer vs. String in Formula](https://msdn.microsoft.com/en-us/library/mt723571.aspx)
+
+The concerning part is this:
+
+```
+## Using Integer vs. String in Formula
+
+
+In this experiment, rxLinMod was used with the `airline` table 
+(where `DayOfWeek` is a string) and `airlineWithIndex` (where `DayOfWeek` is an integer). 
+For the first case, `colInfo` was used to specify the factor levels (Monday, Tuesday, …). 
+For the second, `colInfo` was not specified. In both case, the same formula was used. 
+The formula used is `ArrDelay ~ CRSDepTime + DayOfWeek`. 
+**The following results clearly shows the benefit of using integer vs string:**
+
+
+
+| Table name         | Test name | Average time |
+|:-------------------|----------:|-------------:|
+| airline            | FactorCol | 10.72        |
+| airlineWithIntCol  |    IntCol | 3.4475       |
+```
+
+**(Emphasis added on my part.)**
+
+The issue is that this investigation confounds two different issues that could drive
+the difference in performance:
+
+- The storage type in the database
+- The complexity of the resulting model that is estimated. Specifically, the `FactorCol` model
+is more complex because the `DayOfWeek` variable is translated to a set of 6 'dummy' variables
+in the model. The IntCol model only has 1 variable in it. 
+
+The language above suggests that the effect of the speed up is because of the storage type
+in the database, but it could be driven by the differences in models.
+
+This document goes through independently testing those two different things (among a few additional pieces below).
+
+The outline of the document is to start by replicating the datasources from the `runtests.R` script, 
+proceed to show that the models are in fact different, and then test whether the difference
+observed above is due to the model or the data source. Once that is completed, then a few additional
+tests are done, but those tests don't change the main upshot of the results.
+
+First, we source the functions used to do the benchmarks, and test them.
+
+```{r}
+source('runtests.R')
+rxOptions(reportProgress = 0)
+```
+
+Let's replicate the prior examples:
+
+```{r}
+myTestsToRun <- c('FactorCol','IntCol')
+runTests(myTestsToRun, 'Run1', 1, 500000L) 
+```
+
+In my local tests on a D4 Windoes Data Science Virtual machine (with no optimizations), 
+this was not quite as fast, but took approximately 20s on average for `FactorCol`, and 7s for `IntCol`.
+So, I was able to approximately replicate this effect, with the `FactorCol` test taking approximately
+`r round(10.72/3.4475, 1)`s longer than `IntCol`.
+
+## New approach
+
+The code to do the benchmarks is a little complicated in `runtests.R`, and does not allow for inspecting the actual models for equivalency,
+so I will use a slightly different approach. I will use the `microbenchmark` package to do the benchmarks.
+
+Let's make sure it's installed:
+
+```{r}
+if(!require(microbenchmark)) {
+	install.packages('microbenchmark')
+	library(microbenchmark)
+}
+
+```
+
+From `runtests.R`, the key code is in the `runtests` function, and I've replicated the version as of 12/16/2016 below:
+
+```{r, eval = FALSE}
+if ("FactorCol" %in% testsToRun) {
+    colInfo <- getColInfoForSqlDataSource(airlineXdf, c("DayOfWeek"), FALSE)
+    formula <- ArrDelay ~ CRSDepTime + DayOfWeek
+    airlineTable <- RxSqlServerData(table="airline", connectionString = sqlConnString, colInfo = colInfo)
+    cat("\nRunning FactorCol Test. Using airline table.", "\n")
+    testResult <- runTest(resultDir, "rxLinMod", formula = formula, dataSource = airlineTable, transformFunc = NULL, transformVars = NULL, runs=5)
+    cat("Average Time: ", testResult$avgTime, "\n")
+    times <- processTimings(testResult)
+    if (printTimeSplits) {
+      print(times)
+    }
+  }
+  
+  if ("IntCol" %in% testsToRun) {
+    formula <- ArrDelay ~ CRSDepTime + DayOfWeek
+    airlineWithIntCol <- RxSqlServerData(table="airlineWithIntCol", connectionString = sqlConnString)
+    cat("\nRunning IntCol Test. Using airlineWithIntCol table.", "\n")
+    testResult <- runTest(resultDir, "rxLinMod", formula = formula, dataSource = airlineWithIntCol, transformFunc = NULL, transformVars = NULL, runs=5)
+    cat("Average Time: ", testResult$avgTime, "\n")
+    times <- processTimings(testResult)
+    if (printTimeSplits) {
+      print(times)
+    }
+  }
+```
+
+Let's run the benchmarks with microbenchmark instead. First, set up the arguments that are passed to `runtests()`, and set up the compute context:
+
+```{r}
+numTasks = 1            ## this is an argument to runTests() (used in the computeContext)
+rowsPerRead = 500000L   ## this is an argument to runTests() (This is not used)
+bench_times = 5L        ## number of times based on runTests()
+sqlcc <- getSqlComputeContext(numTasks, sqlConnString)
+rxSetComputeContext(sqlcc)
+```
+
+Next, let's define the two data sources to be exactly the same as before:
+
+```{r}
+colInfo <- getColInfoForSqlDataSource(airlineXdf, c("DayOfWeek"), FALSE)
+airlineTable <- RxSqlServerData(table="airline", connectionString = sqlConnString, colInfo = colInfo)
+airlineWithIntCol <- RxSqlServerData(table="airlineWithIntCol", connectionString = sqlConnString)
+```
+
+And let's double check to see that the variables look like we'd expect:
+
+```{r}
+varsToKeep = c('ArrDelay','CRSDepTime','DayOfWeek')
+rxGetVarInfo(airlineTable, varsToKeep = varsToKeep)
+rxGetVarInfo(airlineWithIntCol, varsToKeep = varsToKeep)
+```
+
+Next, let's set up the variable as indicated in runtests:
+
+```{r}
+formula0 <- ArrDelay ~ CRSDepTime + DayOfWeek
+```
+
+And, now let's reconstuct the models to show that they are different:
+
+```{r}
+factorModel <- rxLinMod(formula0, data = airlineTable)
+intModel <- rxLinMod(formula0, data = airlineWithIntCol)
+```
+
+To see that they're different, you just need to check the coefficients:
+
+```{r}
+coef(factorModel)
+coef(intModel)
+```
+
+Clearly, the number of coefficients is not equal in the two, so the models are not equivalent. 
+`factorModel` contains `r length(coef(factorModel))` coefficients while `intModel` contains 
+`r length(coef(intModel))` coefficients.
+
+Since both the models are different and the storage type is different, we should try to determine which is 
+driving the effect. We can think of the possible outomes in the context of a 2 (data source) x 2 (model) 
+design, where we could have the different options:
+
+- character storage, categorical predictor (`factorModel` above)
+- int storage, int predictor (`intModel` above)
+- character storage, int predictor (not shown above)
+- int storage, factor predictor (not shown above)
+
+You can think of the observed models as being in a diagonal of a 2 x 2 table, where rows correspond to different predictor
+types, and different columns correspond to different storage types.
+
+|   |int|char|
+|--:|:--:|:--:|
+|        int| x  |    |
+|Categorical|    |  x |
+
+We can't tell if the difference is due to the predictor type, or the storage type. This becomes a little more complicated 
+when we can consider that there are different points in time when we
+can do the variable casting, but for now, let's hold that constant and test 
+teh effects of forcing dummy variable creation during model estimation.
+
+## Check Model Equivalencies
+
+First, let's make sure the models are equivalent.
+
+Let's estimate a model that uses character storage, but a numeric predictor:
+
+```{r}
+charStor_intPred_Model <- rxLinMod(ArrDelay ~ CRSDepTime + as.numeric(DayOfWeek), data = airlineTable)
+coef(intModel)
+coef(charStor_intPred_Model)
+all(coef(intModel) == coef(charStor_intPred_Model))
+```
+
+The model is equivalent to the `intModel` above.
+
+Now, let's test the model that uses int storage, but a categorical predictor:
+
+```{r}
+intStor_catPred_Model <- rxLinMod(ArrDelay ~ CRSDepTime + F(DayOfWeek, 1, 7), data = airlineWithIntCol)
+coef(factorModel)
+coef(intStor_catPred_Model)
+all(coef(factorModel)[!is.na(coef(factorModel))] == coef(intStor_catPred_Model)[!is.na(coef(intStor_catPred_Model))])
+```
+
+Ok, the four different models are equivalent. Now let's benchmark:
+
+```{r}
+rxOptions(reportProgress = 0)
+mb_results <- microbenchmark(
+charStorage_factorModel = rxLinMod(ArrDelay ~ CRSDepTime + DayOfWeek,             data = airlineTable, reportProgress = 0),
+intStorage_factorModel  = rxLinMod(ArrDelay ~ CRSDepTime + F(DayOfWeek, 1, 7),    data = airlineWithIntCol, reportProgress = 0),
+charStorage_intModel    = rxLinMod(ArrDelay ~ CRSDepTime + as.integer(DayOfWeek), data = airlineTable, reportProgress = 0),
+intStorage_intModel     = rxLinMod(ArrDelay ~ CRSDepTime + DayOfWeek,             data = airlineWithIntCol, reportProgress = 0),
+times = bench_times
+)
+```
+
+Let's now visualize a little with ggplot2.
+```{r}
+if(!require(ggplot2){
+	install.packages('ggplot2')
+	library(ggplot2)
+}
+```
+
+Let's plot it
+
+```{r}
+autoplot(mb_results)
+```
+
+charStorage does make it take longer, and it's not the creation of the extra variables in the model.
+
+Now that we've addressed that issue, the question is why... One potential difference in the data source is
+that we have now used the colInfo argument in the character reads, but not in the int data sources. Let's
+change that call to test that. 
+
+We can test this in a few ways:
+- create `airlineTable2` data source that uses colInfo on the table that has character storage for DayOfWeek, but only to read it in explicitly as character, and translate that character variable to a factor later
+- create `airlineWithIntColFactorRead` data source that uses colInfo on the table that has int storage for DayOfWeek to define it as a factor on the read.
+- create `airlineTable3` data source that just uses default information on the table that has character storage for DayOfWeek, which results in it being read in
+  as a character variable (very similar to `airlineTbale2`).
+
+If the issue is with parsing the `colInfo` argument overall, then `airlineTable3` should be the fastest, because it is just running with defaults.
+If the issue is specifically about using `colInfo` to specify factors, then `airlineTable2` should be faster than `airlineTable`, and airlineWithIntColFactorRead
+should be slower than the intStorage_factorModel results from above.
+
+Let's see if the difference is maintained if we read in the data in a few different ways.
+
+Set up the data sources:
+
+```{r}
+colInfoChar <- colInfo
+colInfoChar$DayOfWeek$type <- 'character'
+colInfoChar$DayOfWeek$levels <- NULL
+
+airlineTable2 <- RxSqlServerData(table="airline", 
+						connectionString = sqlConnString, 
+						colInfo = colInfoChar)
+colInfoIntFactor <- colInfo
+colInfoIntFactor$DayOfWeek$newLevels <- colInfoIntFactor$DayOfWeek$levels
+colInfoIntFactor$DayOfWeek$levels <- as.character(1:7)
+
+airlineWithIntColFactorRead  <- RxSqlServerData(table="airlineWithIntCol", 
+			connectionString = sqlConnString, colInfo = colInfoIntFactor)
+
+## no colInfo, reads in as chars
+airlineTable3 <- RxSqlServerData(table="airline", 
+						connectionString = sqlConnString)
+```
+
+Benchmark:
+
+```{r}
+mb_results2 <- microbenchmark(
+  intStorage_factorModel_withcolInfo  = rxLinMod(ArrDelay ~ CRSDepTime + DayOfWeek,    
+					data = airlineWithIntColFactorRead, reportProgress = 0),
+  intStorage_factorModel_factorXform  = rxLinMod(ArrDelay ~ CRSDepTime + F_Day,    
+					transforms = list(F_Day = factor(DayOfWeek, labels = curlevels)),
+					transformObjects = list(curlevels = colInfo$DayOfWeek$levels),    
+					data = airlineWithIntCol, reportProgress = 0),
+  charStorage_factorModel_factorXform = rxLinMod(ArrDelay ~ CRSDepTime + F_Day,
+					transforms = list(F_Day = factor(DayOfWeek, levels = curlevels)),
+					transformObjects = list(curlevels = colInfo$DayOfWeek$levels),    
+					data = airlineTable2, reportProgress = 0),
+  charStorage_factorModel_noColInfo = rxLinMod(ArrDelay ~ CRSDepTime + F_Day,
+					transforms = list(F_Day = factor(DayOfWeek, levels = curlevels)),
+					transformObjects = list(curlevels = colInfo$DayOfWeek$levels),    
+					data = airlineTable3, reportProgress = 0),
+					times = bench_times
+					)
+```
+
+And plot:
+
+```{r}
+all_mb_results <- rbind(mb_results, mb_results2)
+all_mb_results
+summary(all_mb_results)
+autoplot(all_mb_results)
+```
+
+So, it looks like storage method does in fact make a difference...
+
+If we wanted to actually run more, and look at either effect sizes or statistical significance: 
+
+```{r}
+varsMat <- matrix(unlist(strsplit(as.character(mb_results$expr), split = '_')), ncol = 2, byrow = TRUE)
+mb_results$storageType <- factor(varsMat[,1])
+mb_results$modelType <- factor(varsMat[,2])
+myAov <- aov(time/1e9 ~ storageType*modelType, data = mb_results)
+
+summary(myAov)
+```
+
