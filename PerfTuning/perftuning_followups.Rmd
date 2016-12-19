@@ -1,0 +1,101 @@
+---
+title: "Fixing Performance Tuning Benchmarks v1 - follow-ups"
+---
+
+This document is a brief follow-up to the `perftuning.Rmd` file also in the directory. If you have not rendered
+it, please do so, as it will save some files that are relevant (and necessary).
+
+We left off with showing that storage type does appear to have a big impact on performance, even after
+controlling for the model type. The intent of this document is to follow up on a few more subtleties.
+
+Let's start out by just setting up the prior datasets and options:
+
+```{r}
+numTasks = 1            ## this is an argument to runTests() (used in the computeContext)
+rowsPerRead = 500000L   ## this is an argument to runTests() (This is not used)
+bench_times = 5L        ## number of times based on runTests()
+rxOptions(reportProgress = 0)
+# set compute context
+sqlcc <- getSqlComputeContext(numTasks, sqlConnString)
+rxSetComputeContext(sqlcc)
+# set datasets:
+colInfo <- getColInfoForSqlDataSource(airlineXdf, c("DayOfWeek"), FALSE)
+airlineTable <- RxSqlServerData(table="airline", connectionString = sqlConnString, colInfo = colInfo)
+airlineWithIntCol <- RxSqlServerData(table="airlineWithIntCol", connectionString = sqlConnString)
+```
+
+Now that we've addressed the main question, the question is why... One potential difference in the data sources 
+as defined above is that we have now used the `colInfo` parameter in the character reads, but not in the int data 
+sources. Let's test whether there's something specific about processing that argument.
+
+We can test this in a few ways:
+
+- create an `airlineTable2` data source that uses colInfo on the table that has character storage for DayOfWeek, but only to read it in explicitly as character, and translate that character variable to a factor later
+- create an `airlineWithIntColFactorRead` data source that uses colInfo on the table that has int storage for `DayOfWeek` to define it as a factor on the read.
+- create an `airlineTable3` data source that just uses default information on the table that has character storage for DayOfWeek, which results in it being read in
+  as a character variable (very similar to `airlineTbale2`).
+
+If the issue is with parsing the `colInfo` argument overall, then `airlineTable3` should be the fastest, because it is just running with defaults.
+If the issue is specifically about using `colInfo` to specify factors, then `airlineTable2` should be faster than `airlineTable`, and `airlineWithIntColFactorRead`
+should be slower than the intStorage_factorModel results from above. 
+
+Also, we should note that if we read in the character variable in as a character variable, then
+we still need to convert it to a factor with some type of transform, so in the spirit of fairness, 
+we will also compare performance on that approach for both ints and chars (there is not an `F()` 
+function that works on character variables).
+
+Set up the data sources:
+
+```{r}
+colInfoChar <- colInfo
+colInfoChar$DayOfWeek$type <- 'character'
+colInfoChar$DayOfWeek$levels <- NULL
+
+airlineTable2 <- RxSqlServerData(table="airline", 
+						connectionString = sqlConnString, 
+						colInfo = colInfoChar)
+colInfoIntFactor <- colInfo
+colInfoIntFactor$DayOfWeek$newLevels <- colInfoIntFactor$DayOfWeek$levels
+colInfoIntFactor$DayOfWeek$levels <- as.character(1:7)
+
+airlineWithIntColFactorRead  <- RxSqlServerData(table="airlineWithIntCol", 
+			connectionString = sqlConnString, colInfo = colInfoIntFactor)
+
+## no colInfo, reads in as chars
+airlineTable3 <- RxSqlServerData(table="airline", 
+						connectionString = sqlConnString)
+```
+
+Benchmark:
+
+```{r}
+mb_results2 <- microbenchmark(
+  intStorage_factorModel_withcolInfo  = rxLinMod(ArrDelay ~ CRSDepTime + DayOfWeek,    
+					data = airlineWithIntColFactorRead, reportProgress = 0),
+  intStorage_factorModel_factorXform  = rxLinMod(ArrDelay ~ CRSDepTime + F_Day,    
+					transforms = list(F_Day = factor(DayOfWeek, labels = curlevels)),
+					transformObjects = list(curlevels = colInfo$DayOfWeek$levels),    
+					data = airlineWithIntCol, reportProgress = 0),
+  charStorage_factorModel_factorXform = rxLinMod(ArrDelay ~ CRSDepTime + F_Day,
+					transforms = list(F_Day = factor(DayOfWeek, levels = curlevels)),
+					transformObjects = list(curlevels = colInfo$DayOfWeek$levels),    
+					data = airlineTable2, reportProgress = 0),
+  charStorage_factorModel_noColInfo = rxLinMod(ArrDelay ~ CRSDepTime + F_Day,
+					transforms = list(F_Day = factor(DayOfWeek, levels = curlevels)),
+					transformObjects = list(curlevels = colInfo$DayOfWeek$levels),    
+					data = airlineTable3, reportProgress = 0),
+					times = bench_times
+					)
+```
+
+And plot:
+
+```{r}
+load('mb_results.Rda')
+all_mb_results <- rbind(mb_results, mb_results2)
+all_mb_results
+summary(all_mb_results)
+autoplot(all_mb_results)
+```
+
+

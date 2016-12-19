@@ -66,7 +66,7 @@ runTests(myTestsToRun, 'Run1', 1, 500000L)
 In my local tests on a D4 Windoes Data Science Virtual machine (with no optimizations), 
 this was not quite as fast, but took approximately 20s on average for `FactorCol`, and 7s for `IntCol`.
 So, I was able to approximately replicate this effect, with the `FactorCol` test taking approximately
-`r round(10.72/3.4475, 1)`s longer than `IntCol`.
+`r round(10.72/3.4475, 1)` times longer than `IntCol`.
 
 ## New approach
 
@@ -118,6 +118,7 @@ Let's run the benchmarks with microbenchmark instead. First, set up the argument
 numTasks = 1            ## this is an argument to runTests() (used in the computeContext)
 rowsPerRead = 500000L   ## this is an argument to runTests() (This is not used)
 bench_times = 5L        ## number of times based on runTests()
+rxOptions(reportProgress = 0)
 sqlcc <- getSqlComputeContext(numTasks, sqlConnString)
 rxSetComputeContext(sqlcc)
 ```
@@ -182,7 +183,7 @@ types, and different columns correspond to different storage types.
 We can't tell if the difference is due to the predictor type, or the storage type. This becomes a little more complicated 
 when we can consider that there are different points in time when we
 can do the variable casting, but for now, let's hold that constant and test 
-teh effects of forcing dummy variable creation during model estimation.
+the effects of forcing dummy variable creation during model estimation.
 
 ## Check Model Equivalencies
 
@@ -221,9 +222,10 @@ times = bench_times
 )
 ```
 
-Let's now visualize a little with ggplot2.
-```{r}
-if(!require(ggplot2){
+Let's now see the results and visualize it with ggplot2.
+
+```{r load-ggplot2}
+if(!require(ggplot2)){
 	install.packages('ggplot2')
 	library(ggplot2)
 }
@@ -231,86 +233,19 @@ if(!require(ggplot2){
 
 Let's plot it
 
-```{r}
+```{r plot-mb-results}
+mb_results
 autoplot(mb_results)
+save(mb_results, file = 'mb_results.Rda')
 ```
 
 charStorage does make it take longer, and it's not the creation of the extra variables in the model.
-
-Now that we've addressed that issue, the question is why... One potential difference in the data source is
-that we have now used the colInfo argument in the character reads, but not in the int data sources. Let's
-change that call to test that. 
-
-We can test this in a few ways:
-- create `airlineTable2` data source that uses colInfo on the table that has character storage for DayOfWeek, but only to read it in explicitly as character, and translate that character variable to a factor later
-- create `airlineWithIntColFactorRead` data source that uses colInfo on the table that has int storage for DayOfWeek to define it as a factor on the read.
-- create `airlineTable3` data source that just uses default information on the table that has character storage for DayOfWeek, which results in it being read in
-  as a character variable (very similar to `airlineTbale2`).
-
-If the issue is with parsing the `colInfo` argument overall, then `airlineTable3` should be the fastest, because it is just running with defaults.
-If the issue is specifically about using `colInfo` to specify factors, then `airlineTable2` should be faster than `airlineTable`, and airlineWithIntColFactorRead
-should be slower than the intStorage_factorModel results from above.
-
-Let's see if the difference is maintained if we read in the data in a few different ways.
-
-Set up the data sources:
-
-```{r}
-colInfoChar <- colInfo
-colInfoChar$DayOfWeek$type <- 'character'
-colInfoChar$DayOfWeek$levels <- NULL
-
-airlineTable2 <- RxSqlServerData(table="airline", 
-						connectionString = sqlConnString, 
-						colInfo = colInfoChar)
-colInfoIntFactor <- colInfo
-colInfoIntFactor$DayOfWeek$newLevels <- colInfoIntFactor$DayOfWeek$levels
-colInfoIntFactor$DayOfWeek$levels <- as.character(1:7)
-
-airlineWithIntColFactorRead  <- RxSqlServerData(table="airlineWithIntCol", 
-			connectionString = sqlConnString, colInfo = colInfoIntFactor)
-
-## no colInfo, reads in as chars
-airlineTable3 <- RxSqlServerData(table="airline", 
-						connectionString = sqlConnString)
-```
-
-Benchmark:
-
-```{r}
-mb_results2 <- microbenchmark(
-  intStorage_factorModel_withcolInfo  = rxLinMod(ArrDelay ~ CRSDepTime + DayOfWeek,    
-					data = airlineWithIntColFactorRead, reportProgress = 0),
-  intStorage_factorModel_factorXform  = rxLinMod(ArrDelay ~ CRSDepTime + F_Day,    
-					transforms = list(F_Day = factor(DayOfWeek, labels = curlevels)),
-					transformObjects = list(curlevels = colInfo$DayOfWeek$levels),    
-					data = airlineWithIntCol, reportProgress = 0),
-  charStorage_factorModel_factorXform = rxLinMod(ArrDelay ~ CRSDepTime + F_Day,
-					transforms = list(F_Day = factor(DayOfWeek, levels = curlevels)),
-					transformObjects = list(curlevels = colInfo$DayOfWeek$levels),    
-					data = airlineTable2, reportProgress = 0),
-  charStorage_factorModel_noColInfo = rxLinMod(ArrDelay ~ CRSDepTime + F_Day,
-					transforms = list(F_Day = factor(DayOfWeek, levels = curlevels)),
-					transformObjects = list(curlevels = colInfo$DayOfWeek$levels),    
-					data = airlineTable3, reportProgress = 0),
-					times = bench_times
-					)
-```
-
-And plot:
-
-```{r}
-all_mb_results <- rbind(mb_results, mb_results2)
-all_mb_results
-summary(all_mb_results)
-autoplot(all_mb_results)
-```
 
 So, it looks like storage method does in fact make a difference...
 
 If we wanted to actually run more, and look at either effect sizes or statistical significance: 
 
-```{r}
+```{r aov-example}
 varsMat <- matrix(unlist(strsplit(as.character(mb_results$expr), split = '_')), ncol = 2, byrow = TRUE)
 mb_results$storageType <- factor(varsMat[,1])
 mb_results$modelType <- factor(varsMat[,2])
@@ -318,4 +253,6 @@ myAov <- aov(time/1e9 ~ storageType*modelType, data = mb_results)
 
 summary(myAov)
 ```
+
+A few more investigations of these effects and ancillary options can be found in `perftuning_follow-ups.Rmd.`
 
