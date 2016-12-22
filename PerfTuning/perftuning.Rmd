@@ -1,5 +1,5 @@
 ---
-title: "Fixing Performance Tuning Benchmarks v1"
+title: "Examining Performance Tuning Benchmarks v1"
 ---
 
 This document is intended to address a potential concern with the performance tuning
@@ -37,7 +37,7 @@ the difference in performance:
 - The storage type in the database
 - The complexity of the resulting model that is estimated. Specifically, the `FactorCol` model
 is more complex because the `DayOfWeek` variable is translated to a set of 6 'dummy' variables
-in the model. The IntCol model only has 1 variable in it. 
+in the model. The `IntCol` model only uses 1 variable to cover the `DayOfWeek` variable. 
 
 The language above suggests that the effect of the speed up is because of the storage type
 in the database, but it could be driven by the differences in models.
@@ -51,14 +51,14 @@ tests are done, but those tests don't change the main upshot of the results.
 
 First, we source the functions used to do the benchmarks, and test them.
 
-```{r}
+```{r source-runtests}
 source('runtests.R')
 rxOptions(reportProgress = 0)
 ```
 
 Let's replicate the prior examples:
 
-```{r}
+```{r run-sourced-code}
 myTestsToRun <- c('FactorCol','IntCol')
 runTests(myTestsToRun, 'Run1', 1, 500000L) 
 ```
@@ -75,7 +75,7 @@ so I will use a slightly different approach. I will use the `microbenchmark` pac
 
 Let's make sure it's installed:
 
-```{r}
+```{r load-mb}
 if(!require(microbenchmark)) {
 	install.packages('microbenchmark')
 	library(microbenchmark)
@@ -85,7 +85,7 @@ if(!require(microbenchmark)) {
 
 From `runtests.R`, the key code is in the `runtests` function, and I've replicated the version as of 12/16/2016 below:
 
-```{r, eval = FALSE}
+```{r runtests-code, eval = FALSE}
 if ("FactorCol" %in% testsToRun) {
     colInfo <- getColInfoForSqlDataSource(airlineXdf, c("DayOfWeek"), FALSE)
     formula <- ArrDelay ~ CRSDepTime + DayOfWeek
@@ -112,9 +112,10 @@ if ("FactorCol" %in% testsToRun) {
   }
 ```
 
-Let's run the benchmarks with microbenchmark instead. First, set up the arguments that are passed to `runtests()`, and set up the compute context:
+Let's run the benchmarks with `microbenchmark` instead to try to speed up the process. 
+First, set up the arguments that are passed to `runtests()`, and set up the compute context:
 
-```{r}
+```{r set-context-and-args}
 numTasks = 1            ## this is an argument to runTests() (used in the computeContext)
 rowsPerRead = 500000L   ## this is an argument to runTests() (This is not used)
 bench_times = 5L        ## number of times based on runTests()
@@ -125,7 +126,7 @@ rxSetComputeContext(sqlcc)
 
 Next, let's define the two data sources to be exactly the same as before:
 
-```{r}
+```{r define-data-sources}
 colInfo <- getColInfoForSqlDataSource(airlineXdf, c("DayOfWeek"), FALSE)
 airlineTable <- RxSqlServerData(table="airline", connectionString = sqlConnString, colInfo = colInfo)
 airlineWithIntCol <- RxSqlServerData(table="airlineWithIntCol", connectionString = sqlConnString)
@@ -133,28 +134,28 @@ airlineWithIntCol <- RxSqlServerData(table="airlineWithIntCol", connectionString
 
 And let's double check to see that the variables look like we'd expect:
 
-```{r}
+```{r view-data}
 varsToKeep = c('ArrDelay','CRSDepTime','DayOfWeek')
 rxGetVarInfo(airlineTable, varsToKeep = varsToKeep)
 rxGetVarInfo(airlineWithIntCol, varsToKeep = varsToKeep)
 ```
 
-Next, let's set up the variable as indicated in runtests:
+Next, let's set up the variable as indicated in `runtests()`:
 
-```{r}
+```{r define-formula}
 formula0 <- ArrDelay ~ CRSDepTime + DayOfWeek
 ```
 
 And, now let's reconstuct the models to show that they are different:
 
-```{r}
-factorModel <- rxLinMod(formula0, data = airlineTable)
-intModel <- rxLinMod(formula0, data = airlineWithIntCol)
+```{r estimate-models}
+factorModel <- rxLinMod(formula0, data = airlineTable, reportProgress = 0)
+intModel <- rxLinMod(formula0, data = airlineWithIntCol, reportProgress = 0)
 ```
 
 To see that they're different, you just need to check the coefficients:
 
-```{r}
+```{r view-coefs}
 coef(factorModel)
 coef(intModel)
 ```
@@ -191,8 +192,8 @@ First, let's make sure the models are equivalent.
 
 Let's estimate a model that uses character storage, but a numeric predictor:
 
-```{r}
-charStor_intPred_Model <- rxLinMod(ArrDelay ~ CRSDepTime + as.numeric(DayOfWeek), data = airlineTable)
+```{r test-intmodels}
+charStor_intPred_Model <- rxLinMod(ArrDelay ~ CRSDepTime + as.integer(DayOfWeek), data = airlineTable)
 coef(intModel)
 coef(charStor_intPred_Model)
 all(coef(intModel) == coef(charStor_intPred_Model))
@@ -202,7 +203,7 @@ The model is equivalent to the `intModel` above.
 
 Now, let's test the model that uses int storage, but a categorical predictor:
 
-```{r}
+```{r test-cat-models}
 intStor_catPred_Model <- rxLinMod(ArrDelay ~ CRSDepTime + F(DayOfWeek, 1, 7), data = airlineWithIntCol)
 coef(factorModel)
 coef(intStor_catPred_Model)
@@ -211,7 +212,7 @@ all(coef(factorModel)[!is.na(coef(factorModel))] == coef(intStor_catPred_Model)[
 
 Ok, the four different models are equivalent. Now let's benchmark:
 
-```{r}
+```{r run-microbenchmark}
 rxOptions(reportProgress = 0)
 mb_results <- microbenchmark(
 charStorage_factorModel = rxLinMod(ArrDelay ~ CRSDepTime + DayOfWeek,             data = airlineTable, reportProgress = 0),
