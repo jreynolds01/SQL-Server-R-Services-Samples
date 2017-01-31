@@ -7,7 +7,7 @@ options(sqlConnString = "Driver=SQL Server;Server=.;Database=PerfTuning;Trusted_
 sqlConnString <- getOption("sqlConnString") # required option
 
 # Directory where the scripts and data are.
-options(dir = "e:/perftuning")
+options(dir = "F:/git/SQL-Server-R-Services-Samples/PerfTuning")
 dir <- getOption("dir")
 
 if (!file.exists(dir))

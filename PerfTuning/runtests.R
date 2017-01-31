@@ -19,7 +19,7 @@ sqlConnString <- getOption("sqlConnString") # required option
 ####################################################################################################
 # Directory where the scripts and data are. Update this before running test.
 ####################################################################################################
-options(dir = "e:/perftuning")
+options(dir = "F:/git/SQL-Server-R-Services-Samples/PerfTuning")
 dir <- getOption("dir")
 
 if (!file.exists(dir))
@@ -695,8 +695,8 @@ airlineXdf <- RxXdfData(airlineXdfFile)
 ####################################################################################################
 # Set some global flags to control what gets printed when running the tests.
 ####################################################################################################
-printEachTestRuntime <- T # Prints run time for each test
-printTimeSplits <- F # Print the time for IO/Transition/Compute.
+printEachTestRuntime <- TRUE # Prints run time for each test
+printTimeSplits <- FALSE # Print the time for IO/Transition/Compute.
 
 
 
